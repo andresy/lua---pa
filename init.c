@@ -16,15 +16,14 @@ typedef struct pa_stream__
     int noutchannel;
     PaSampleFormat insampleformat;
     PaSampleFormat outsampleformat;
+    void *outbuffer;
+    long noutframe;
 } pa_Stream;
 
 static void pa_checkerror(lua_State *L, PaError err)
 {
   if(err != paNoError)
-  {
-    Pa_Terminate();
     luaL_error(L, "An error occured while using the portaudio stream: %s", Pa_GetErrorText(err));
-  }
 }
 /*
 static const struct luaL_Reg sndfile_SndFile__ [] = {
@@ -255,6 +254,55 @@ static int pa_sleep(lua_State *L)
   return 0;
 }
 
+/* do a stream:outbuffershort()... with that */
+/* should be a macro with float, short, char, byte (cannot do the 24 bits right, even though i could convert from 32 bit tensor on the fly) */
+static int streamcallbackshort(const void *input_, void *output_,
+                               unsigned long frameCount,
+                               const PaStreamCallbackTimeInfo *timeInfo, PaStreamCallbackFlags statusFlags,
+                               void *userData_)
+{
+  pa_Stream *stream = userData_;
+
+//  printf("buffer = %x\n", stream->outbuffer);
+
+  if(stream->outbuffer)
+  {
+    THShortTensor *buffer = stream->outbuffer;
+    long nframe = THShortTensor_nElement(buffer)/stream->noutchannel;
+    short *output = output_;
+    short *data = THShortTensor_data(buffer);
+    long i, j;
+
+//    printf("A: frameCount = %lu (to be read) stream->noutframe (read) = %ld nframe (total) = %ld\n", frameCount, stream->noutframe, nframe);
+    for(i = 0; (i < frameCount) && (i+stream->noutframe < nframe) ; i++)
+    {
+      for(j = 0; j < stream->noutchannel; j++)
+        output[stream->noutchannel*i+j] = data[stream->noutchannel*(i+stream->noutframe)+j];
+    }
+    stream->noutframe += i;
+
+    /* fill the rest with zero */
+    for(; i < frameCount; i++)
+    {
+      for(j = 0; j < stream->noutchannel; j++)
+        output[stream->noutchannel*i+j] = 0;
+    }
+
+//    printf("B: frameCount = %lu (to be read) stream->noutframe (read) = %ld nframe (total) = %ld\n", frameCount, stream->noutframe, nframe);
+
+    if(stream->noutframe == nframe)
+    {
+      THShortTensor_free(stream->outbuffer);
+      stream->outbuffer = NULL;
+      return paComplete;
+    }
+    else
+      return paContinue;
+  }
+
+  return paComplete;
+}
+
 static int pa_opendefaultstream(lua_State *L)
 {
   int numinchan = 0;
@@ -262,11 +310,11 @@ static int pa_opendefaultstream(lua_State *L)
   PaSampleFormat sampleformat = 0;
   double samplerate = 0;
   unsigned long nbufframe = 0;
-  PaStream *id = NULL;
   pa_Stream *stream = NULL;
   int narg = lua_gettop(L);
+  int hascallback = 0;
 
-  if((narg == 5 || (narg == 6 && lua_isfunction(L, 6))) &&
+  if((narg == 5 || (narg == 6 && lua_isboolean(L, 6))) &&
      lua_isnumber(L, 1) && lua_isnumber(L, 2) && lua_isnumber(L, 3) && lua_isnumber(L, 4) && lua_isnumber(L, 5))
   {
     numinchan = (int)lua_tonumber(L, 1);
@@ -274,20 +322,28 @@ static int pa_opendefaultstream(lua_State *L)
     sampleformat = (PaSampleFormat)lua_tonumber(L, 3);
     samplerate = (double)lua_tonumber(L, 4);
     nbufframe = (unsigned long)lua_tonumber(L, 5);
+
+    if(narg == 6)
+      hascallback = lua_toboolean(L, 6);
   }
   else
-    luaL_error(L, "expected arguments: number number number number number [function]");
+    luaL_error(L, "expected arguments: number number number number number [boolean]");
 
-
-  pa_checkerror(L, Pa_OpenDefaultStream(&id, numinchan, numoutchan, sampleformat, samplerate, nbufframe, NULL, NULL));
-  
   stream = luaT_alloc(L, sizeof(pa_Stream));
-  stream->id = id;
+  stream->id = NULL;
   stream->ninchannel = numinchan;
   stream->noutchannel = numoutchan;
   stream->insampleformat = sampleformat;
   stream->outsampleformat = sampleformat;
+  stream->outbuffer = NULL;
+  stream->noutframe = 0;
   luaT_pushudata(L, stream, pa_stream_id);
+
+  if(hascallback)
+    pa_checkerror(L, Pa_OpenDefaultStream(&stream->id, numinchan, numoutchan, sampleformat, samplerate, nbufframe, streamcallbackshort, stream));
+  else
+    pa_checkerror(L, Pa_OpenDefaultStream(&stream->id, numinchan, numoutchan, sampleformat, samplerate, nbufframe, NULL, NULL));
+
   return 1;
 }
 
@@ -305,6 +361,26 @@ static int pa_stream_close(lua_State *L)
 
   pa_checkerror(L, Pa_CloseStream(stream->id));
   stream->id = NULL;
+  return 0;
+}
+
+static int pa_stream_free(lua_State *L)
+{
+  pa_Stream *stream = NULL;
+  int narg = lua_gettop(L);
+  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
+    stream = luaT_toudata(L, 1, pa_stream_id);
+  else
+    luaL_error(L, "expected arguments: Stream");
+
+  if(!stream->id)
+    luaL_error(L, "attempt to operate on a closed stream");
+  else
+    Pa_CloseStream(stream->id);
+
+  /* should also free input/output buffers */
+  luaT_free(L, stream);
+
   return 0;
 }
 
@@ -452,6 +528,23 @@ static int pa_stream_writeavailable(lua_State *L)
   return 1;
 }
 
+static int pa_stream_cpuload(lua_State *L)
+{
+  pa_Stream *stream = NULL;
+  int narg = lua_gettop(L);
+
+  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
+    stream = luaT_toudata(L, 1, pa_stream_id);
+  else
+    luaL_error(L, "expected arguments: Stream");
+
+  if(!stream->id)
+    luaL_error(L, "attempt to operate on a closed stream");
+
+  lua_pushnumber(L, Pa_GetStreamCpuLoad(stream->id));
+  return 1;
+}
+
 static int pa_stream_writeShort(lua_State *L)
 {
   pa_Stream *stream = NULL;
@@ -489,6 +582,34 @@ static int pa_stream_writeShort(lua_State *L)
   return 1;
 }
 
+static int pa_stream_outputbufferShort(lua_State *L)
+{
+  pa_Stream *stream = NULL;
+  THShortTensor *data = NULL;
+  long nelem = 0;
+  int narg = lua_gettop(L);
+
+  if(narg == 2 && luaT_isudata(L, 1, pa_stream_id) && luaT_isudata(L, 2, torch_ShortTensor_id))
+  {
+    stream = luaT_toudata(L, 1, pa_stream_id);
+    data = luaT_toudata(L, 2, torch_ShortTensor_id);
+  }
+  else
+    luaL_error(L, "expected arguments: Stream ShortTensor");
+
+  if(!stream->id)
+    luaL_error(L, "attempt to operate on a closed stream");
+
+  nelem = THShortTensor_nElement(data);
+  luaL_argcheck(L, (nelem > 0) && (nelem % stream->noutchannel == 0), 2, "invalid data: number of elements must be > 0 and divisible by the number of channels");
+  luaL_argcheck(L, stream->outsampleformat & paInt16, 1, "stream does not support short data");
+
+  stream->outbuffer = THShortTensor_newClone(data);
+  stream->noutframe = 0;
+
+  return 0;
+}
+
 static const struct luaL_Reg pa_stream__ [] = {
   {"close", pa_stream_close},
   {"start", pa_stream_start},
@@ -498,7 +619,9 @@ static const struct luaL_Reg pa_stream__ [] = {
   {"isactive", pa_stream_isactive},
   {"readavailable", pa_stream_readavailable},
   {"writeavailable", pa_stream_writeavailable},
+  {"cpuload", pa_stream_cpuload},
   {"writeShort", pa_stream_writeShort},
+  {"outputbufferShort", pa_stream_outputbufferShort}, /* pourrait faire un shortcut (en lua?) qui call la bonne */
   {NULL, NULL}
 };
 
@@ -549,7 +672,7 @@ DLL_EXPORT int luaopen_libpa(lua_State *L)
   torch_FloatTensor_id = luaT_checktypename2id(L, "torch.FloatTensor");
   torch_DoubleTensor_id = luaT_checktypename2id(L, "torch.DoubleTensor");
 
-  pa_stream_id = luaT_newmetatable(L, "pa.Stream", NULL, NULL, pa_stream_close, NULL);
+  pa_stream_id = luaT_newmetatable(L, "pa.Stream", NULL, NULL, pa_stream_free, NULL);
   luaL_register(L, NULL, pa_stream__);
   lua_pop(L, 1);
 
