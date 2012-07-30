@@ -7,6 +7,16 @@ const void* torch_ShortTensor_id;
 const void* torch_IntTensor_id;
 const void* torch_FloatTensor_id;
 const void* torch_DoubleTensor_id;
+const void *pa_stream_id;
+
+typedef struct pa_stream__
+{
+    PaStream *id;
+    int ninchannel;
+    int noutchannel;
+    PaSampleFormat insampleformat;
+    PaSampleFormat outsampleformat;
+} pa_Stream;
 
 static void pa_checkerror(lua_State *L, PaError err)
 {
@@ -245,6 +255,253 @@ static int pa_sleep(lua_State *L)
   return 0;
 }
 
+static int pa_opendefaultstream(lua_State *L)
+{
+  int numinchan = 0;
+  int numoutchan = 0;
+  PaSampleFormat sampleformat = 0;
+  double samplerate = 0;
+  unsigned long nbufframe = 0;
+  PaStream *id = NULL;
+  pa_Stream *stream = NULL;
+  int narg = lua_gettop(L);
+
+  if((narg == 5 || (narg == 6 && lua_isfunction(L, 6))) &&
+     lua_isnumber(L, 1) && lua_isnumber(L, 2) && lua_isnumber(L, 3) && lua_isnumber(L, 4) && lua_isnumber(L, 5))
+  {
+    numinchan = (int)lua_tonumber(L, 1);
+    numoutchan = (int)lua_tonumber(L, 2);
+    sampleformat = (PaSampleFormat)lua_tonumber(L, 3);
+    samplerate = (double)lua_tonumber(L, 4);
+    nbufframe = (unsigned long)lua_tonumber(L, 5);
+  }
+  else
+    luaL_error(L, "expected arguments: number number number number number [function]");
+
+
+  pa_checkerror(L, Pa_OpenDefaultStream(&id, numinchan, numoutchan, sampleformat, samplerate, nbufframe, NULL, NULL));
+  
+  stream = luaT_alloc(L, sizeof(pa_Stream));
+  stream->id = id;
+  stream->ninchannel = numinchan;
+  stream->noutchannel = numoutchan;
+  stream->insampleformat = sampleformat;
+  stream->outsampleformat = sampleformat;
+  luaT_pushudata(L, stream, pa_stream_id);
+  return 1;
+}
+
+static int pa_stream_close(lua_State *L)
+{
+  pa_Stream *stream = NULL;
+  int narg = lua_gettop(L);
+  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
+    stream = luaT_toudata(L, 1, pa_stream_id);
+  else
+    luaL_error(L, "expected arguments: Stream");
+
+  if(!stream->id)
+    luaL_error(L, "attempt to operate on a closed stream");
+
+  pa_checkerror(L, Pa_CloseStream(stream->id));
+  stream->id = NULL;
+  return 0;
+}
+
+static int pa_stream_start(lua_State *L)
+{
+  pa_Stream *stream = NULL;
+  int narg = lua_gettop(L);
+  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
+    stream = luaT_toudata(L, 1, pa_stream_id);
+  else
+    luaL_error(L, "expected arguments: Stream");
+
+  if(!stream->id)
+    luaL_error(L, "attempt to operate on a closed stream");
+
+  pa_checkerror(L, Pa_StartStream(stream->id));
+  return 0;
+}
+
+static int pa_stream_abort(lua_State *L)
+{
+  pa_Stream *stream = NULL;
+  int narg = lua_gettop(L);
+  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
+    stream = luaT_toudata(L, 1, pa_stream_id);
+  else
+    luaL_error(L, "expected arguments: Stream");
+
+  if(!stream->id)
+    luaL_error(L, "attempt to operate on a closed stream");
+
+  pa_checkerror(L, Pa_AbortStream(stream->id));
+  return 0;
+}
+
+static int pa_stream_stop(lua_State *L)
+{
+  pa_Stream *stream = NULL;
+  int narg = lua_gettop(L);
+  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
+    stream = luaT_toudata(L, 1, pa_stream_id);
+  else
+    luaL_error(L, "expected arguments: Stream");
+
+  if(!stream->id)
+    luaL_error(L, "attempt to operate on a closed stream");
+
+  pa_checkerror(L, Pa_StopStream(stream->id));
+  return 0;
+}
+
+static int pa_stream_isstopped(lua_State *L)
+{
+  pa_Stream *stream = NULL;
+  int narg = lua_gettop(L);
+  PaError err = 0;
+
+  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
+    stream = luaT_toudata(L, 1, pa_stream_id);
+  else
+    luaL_error(L, "expected arguments: Stream");
+
+  if(!stream->id)
+    luaL_error(L, "attempt to operate on a closed stream");
+
+  err = Pa_IsStreamStopped(stream->id);
+  if(err == 1)
+    lua_pushboolean(L, 1);
+  else if(err == 0)
+    lua_pushboolean(L, 0);
+  else
+    pa_checkerror(L, err);
+
+  return 1;
+}
+
+static int pa_stream_isactive(lua_State *L)
+{
+  pa_Stream *stream = NULL;
+  int narg = lua_gettop(L);
+  PaError err = 0;
+
+  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
+    stream = luaT_toudata(L, 1, pa_stream_id);
+  else
+    luaL_error(L, "expected arguments: Stream");
+
+  if(!stream->id)
+    luaL_error(L, "attempt to operate on a closed stream");
+
+  err = Pa_IsStreamActive(stream->id);
+  if(err == 1)
+    lua_pushboolean(L, 1);
+  else if(err == 0)
+    lua_pushboolean(L, 0);
+  else
+    pa_checkerror(L, err);
+
+  return 1;
+}
+
+static int pa_stream_readavailable(lua_State *L)
+{
+  pa_Stream *stream = NULL;
+  int narg = lua_gettop(L);
+  PaError err = 0;
+
+  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
+    stream = luaT_toudata(L, 1, pa_stream_id);
+  else
+    luaL_error(L, "expected arguments: Stream");
+
+  if(!stream->id)
+    luaL_error(L, "attempt to operate on a closed stream");
+
+  err = Pa_GetStreamReadAvailable(stream->id);
+  if(err >= 0)
+    lua_pushnumber(L, err);
+  else
+    pa_checkerror(L, err);
+
+  return 1;
+}
+
+static int pa_stream_writeavailable(lua_State *L)
+{
+  pa_Stream *stream = NULL;
+  int narg = lua_gettop(L);
+  PaError err = 0;
+
+  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
+    stream = luaT_toudata(L, 1, pa_stream_id);
+  else
+    luaL_error(L, "expected arguments: Stream");
+
+  if(!stream->id)
+    luaL_error(L, "attempt to operate on a closed stream");
+
+  err = Pa_GetStreamWriteAvailable(stream->id);
+  if(err >= 0)
+    lua_pushnumber(L, err);
+  else
+    pa_checkerror(L, err);
+
+  return 1;
+}
+
+static int pa_stream_writeShort(lua_State *L)
+{
+  pa_Stream *stream = NULL;
+  THShortTensor *data = NULL;
+  long nelem = 0;
+  PaError err = 0;
+  int narg = lua_gettop(L);
+
+  if(narg == 2 && luaT_isudata(L, 1, pa_stream_id) && luaT_isudata(L, 2, torch_ShortTensor_id))
+  {
+    stream = luaT_toudata(L, 1, pa_stream_id);
+    data = luaT_toudata(L, 2, torch_ShortTensor_id);
+  }
+  else
+    luaL_error(L, "expected arguments: Stream ShortTensor");
+
+  if(!stream->id)
+    luaL_error(L, "attempt to operate on a closed stream");
+
+  nelem = THShortTensor_nElement(data);
+  luaL_argcheck(L, (nelem > 0) && (nelem % stream->noutchannel == 0), 2, "invalid data: number of elements must be > 0 and divisible by the number of channels");
+  luaL_argcheck(L, stream->outsampleformat & paInt16, 1, "stream does not support short data");
+
+  data = THShortTensor_newContiguous(data);
+  err = Pa_WriteStream(stream->id, THShortTensor_data(data), nelem/stream->noutchannel);
+  THShortTensor_free(data);
+
+  if(err == paOutputUnderflowed)
+    lua_pushboolean(L, 0);
+  else if(err == paNoError)
+    lua_pushboolean(L, 1);
+  else
+    pa_checkerror(L, err);
+
+  return 1;
+}
+
+static const struct luaL_Reg pa_stream__ [] = {
+  {"close", pa_stream_close},
+  {"start", pa_stream_start},
+  {"abort", pa_stream_abort},
+  {"stop", pa_stream_stop},
+  {"isstopped", pa_stream_isstopped},
+  {"isactive", pa_stream_isactive},
+  {"readavailable", pa_stream_readavailable},
+  {"writeavailable", pa_stream_writeavailable},
+  {"writeShort", pa_stream_writeShort},
+  {NULL, NULL}
+};
+
 static const struct luaL_Reg pa_global__ [] = {
   {"version", pa_version},
   {"hostapicount", pa_hostapicount},
@@ -257,6 +514,7 @@ static const struct luaL_Reg pa_global__ [] = {
   {"deviceinfo", pa_deviceinfo},
   {"isformatsupported", pa_isformatsupported},
   {"sleep", pa_sleep},
+  {"opendefaultstream", pa_opendefaultstream},
   {NULL, NULL}
 };
 
@@ -291,9 +549,10 @@ DLL_EXPORT int luaopen_libpa(lua_State *L)
   torch_FloatTensor_id = luaT_checktypename2id(L, "torch.FloatTensor");
   torch_DoubleTensor_id = luaT_checktypename2id(L, "torch.DoubleTensor");
 
-//  pa_id = luaT_newmetatable(L, "sndfile.SndFile", NULL, sndfile_new, sndfile_free, NULL);
-//  luaL_register(L, NULL, sndfile_SndFile__);
-//  lua_pop(L, 1);
+  pa_stream_id = luaT_newmetatable(L, "pa.Stream", NULL, NULL, pa_stream_close, NULL);
+  luaL_register(L, NULL, pa_stream__);
+  lua_pop(L, 1);
+
   pa_checkerror(L, Pa_Initialize());
 
   return 1;
