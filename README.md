@@ -1,4 +1,4 @@
-# sndfile: an interface to libsndfile
+# pa: an interface to PortAudio
 
 The package provide a interface to the [portaudio](http://portaudio.com) library.
 
