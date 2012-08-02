@@ -265,41 +265,56 @@ static int streamcallbackshort(const void *input_, void *output_,
 
 //  printf("buffer = %x\n", stream->outbuffer);
 
-  if(stream->outbuffer)
+  if(stream->noutchannel > 0)
   {
-    THShortTensor *buffer = stream->outbuffer;
-    long nframe = THShortTensor_nElement(buffer)/stream->noutchannel;
-    short *output = output_;
-    short *data = THShortTensor_data(buffer);
-    long i, j;
-
+    if(stream->outbuffer)
+    {
+      THShortTensor *buffer = stream->outbuffer;
+      long nframe = THShortTensor_nElement(buffer)/stream->noutchannel;
+      short *output = output_;
+      short *data = THShortTensor_data(buffer);
+      long i, j;
+      
 //    printf("A: frameCount = %lu (to be read) stream->noutframe (read) = %ld nframe (total) = %ld\n", frameCount, stream->noutframe, nframe);
-    for(i = 0; (i < frameCount) && (i+stream->noutframe < nframe) ; i++)
-    {
-      for(j = 0; j < stream->noutchannel; j++)
-        output[stream->noutchannel*i+j] = data[stream->noutchannel*(i+stream->noutframe)+j];
-    }
-    stream->noutframe += i;
-
-    /* fill the rest with zero */
-    for(; i < frameCount; i++)
-    {
-      for(j = 0; j < stream->noutchannel; j++)
-        output[stream->noutchannel*i+j] = 0;
-    }
-
+      for(i = 0; (i < frameCount) && (i+stream->noutframe < nframe) ; i++)
+      {
+        for(j = 0; j < stream->noutchannel; j++)
+          output[stream->noutchannel*i+j] = data[stream->noutchannel*(i+stream->noutframe)+j];
+      }
+      stream->noutframe += i;
+      
+      /* fill the rest with zero */
+      for(; i < frameCount; i++)
+      {
+        for(j = 0; j < stream->noutchannel; j++)
+          output[stream->noutchannel*i+j] = 0;
+      }
+      
 //    printf("B: frameCount = %lu (to be read) stream->noutframe (read) = %ld nframe (total) = %ld\n", frameCount, stream->noutframe, nframe);
-
-    if(stream->noutframe == nframe)
-    {
-      THShortTensor_free(stream->outbuffer);
-      stream->outbuffer = NULL;
-      return paComplete;
+      
+      if(stream->noutframe == nframe)
+      {
+        THShortTensor_free(stream->outbuffer);
+        stream->outbuffer = NULL;
+        return paComplete;
+      }
+      else
+        return paContinue;
     }
     else
-      return paContinue;
-  }
+    {
+      long i, j;
+      short *output = output_;
 
+      /* fill the rest with zero */
+      for(i = 0; i < frameCount; i++)
+      {
+        for(j = 0; j < stream->noutchannel; j++)
+          output[stream->noutchannel*i+j] = 0;
+      }
+      return paComplete;
+    }
+  }
   return paComplete;
 }
 
@@ -600,6 +615,9 @@ static int pa_stream_outputbufferShort(lua_State *L)
   if(!stream->id)
     luaL_error(L, "attempt to operate on a closed stream");
 
+  if(Pa_IsStreamActive(stream->id))
+    luaL_error(L, "cannot change the buffer of an active stream");
+
   nelem = THShortTensor_nElement(data);
   luaL_argcheck(L, (nelem > 0) && (nelem % stream->noutchannel == 0), 2, "invalid data: number of elements must be > 0 and divisible by the number of channels");
   luaL_argcheck(L, stream->outsampleformat & paInt16, 1, "stream does not support short data");
@@ -643,6 +661,18 @@ static const struct luaL_Reg pa_global__ [] = {
 
 DLL_EXPORT int luaopen_libpa(lua_State *L)
 {
+  if(sizeof(short) != sizeof(paInt16))
+    luaL_error("your platform has a strange size for short int type");
+
+  if(sizeof(int) != sizeof(paInt32))
+    luaL_error("your platform has a strange size for int type");
+
+  if(sizeof(char) != sizeof(paInt8))
+    luaL_error("your platform has a strange size for char type");
+
+  if(sizeof(float) != sizeof(paFloat32))
+    luaL_error("your platform has a strange size for float type");
+
   lua_newtable(L);
   lua_pushvalue(L, -1);
   lua_setfield(L, LUA_GLOBALSINDEX, "pa");
