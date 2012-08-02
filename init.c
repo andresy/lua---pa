@@ -16,8 +16,8 @@ typedef struct pa_stream__
     int noutchannel;
     PaSampleFormat insampleformat;
     PaSampleFormat outsampleformat;
-    void *outbuffer;
-    long noutframe;
+    lua_State *pa_L;
+    const char *callbackerror;
 } pa_Stream;
 
 static void pa_checkerror(lua_State *L, PaError err)
@@ -254,7 +254,6 @@ static int pa_sleep(lua_State *L)
   return 0;
 }
 
-/* do a stream:outbuffershort()... with that */
 /* should be a macro with float, short, char, byte (cannot do the 24 bits right, even though i could convert from 32 bit tensor on the fly) */
 static int streamcallbackshort(const void *input_, void *output_,
                                unsigned long frameCount,
@@ -262,60 +261,52 @@ static int streamcallbackshort(const void *input_, void *output_,
                                void *userData_)
 {
   pa_Stream *stream = userData_;
+  static THShortStorage outstorage;
+  static THShortTensor outtensor;
+  static long size[2];
+  static long stride[2];
+  int ret;
 
-//  printf("buffer = %x\n", stream->outbuffer);
+  size[0] = frameCount;
+  size[1] = stream->noutchannel;
+  stride[0] = 2;
+  stride[1] = 1;
+  
+  outstorage.data = (short int*)output_;
+  outstorage.size = frameCount*stream->noutchannel;
+  outstorage.refcount = 0;
+  outstorage.flag = 0;
+  
+  outtensor.size = size;
+  outtensor.stride = stride;
+  outtensor.nDimension = 2;
+  outtensor.storage = &outstorage;
+  outtensor.storageOffset = 0;
+  outtensor.refcount = 0;
+  outtensor.flag = 0;
 
-  if(stream->noutchannel > 0)
+  lua_pushvalue(stream->pa_L, -1);
+  luaT_pushudata(stream->pa_L, &outtensor, luaT_checktypename2id(stream->pa_L, "torch.ShortTensor"));
+  if(lua_pcall(stream->pa_L, 1, 1, 0))
   {
-    if(stream->outbuffer)
-    {
-      THShortTensor *buffer = stream->outbuffer;
-      long nframe = THShortTensor_nElement(buffer)/stream->noutchannel;
-      short *output = output_;
-      short *data = THShortTensor_data(buffer);
-      long i, j;
-      
-//    printf("A: frameCount = %lu (to be read) stream->noutframe (read) = %ld nframe (total) = %ld\n", frameCount, stream->noutframe, nframe);
-      for(i = 0; (i < frameCount) && (i+stream->noutframe < nframe) ; i++)
-      {
-        for(j = 0; j < stream->noutchannel; j++)
-          output[stream->noutchannel*i+j] = data[stream->noutchannel*(i+stream->noutframe)+j];
-      }
-      stream->noutframe += i;
-      
-      /* fill the rest with zero */
-      for(; i < frameCount; i++)
-      {
-        for(j = 0; j < stream->noutchannel; j++)
-          output[stream->noutchannel*i+j] = 0;
-      }
-      
-//    printf("B: frameCount = %lu (to be read) stream->noutframe (read) = %ld nframe (total) = %ld\n", frameCount, stream->noutframe, nframe);
-      
-      if(stream->noutframe == nframe)
-      {
-        THShortTensor_free(stream->outbuffer);
-        stream->outbuffer = NULL;
-        return paComplete;
-      }
-      else
-        return paContinue;
-    }
-    else
-    {
-      long i, j;
-      short *output = output_;
-
-      /* fill the rest with zero */
-      for(i = 0; i < frameCount; i++)
-      {
-        for(j = 0; j < stream->noutchannel; j++)
-          output[stream->noutchannel*i+j] = 0;
-      }
-      return paComplete;
-    }
+    stream->callbackerror = lua_tostring(stream->pa_L, -1);
+    return paComplete;
   }
-  return paComplete;
+
+  if(lua_toboolean(stream->pa_L, -1))
+    ret = paContinue;
+  else
+    ret = paComplete;
+  lua_pop(stream->pa_L, 1);
+
+  return ret;
+}
+
+static int pa_writer(lua_State *L, const void* b, size_t size, void* B)
+{
+  (void)L;
+  luaL_addlstring((luaL_Buffer*) B, (const char *)b, size);
+  return 0;
 }
 
 static int pa_opendefaultstream(lua_State *L)
@@ -328,8 +319,9 @@ static int pa_opendefaultstream(lua_State *L)
   pa_Stream *stream = NULL;
   int narg = lua_gettop(L);
   int hascallback = 0;
+  lua_State *pa_L = NULL;
 
-  if((narg == 5 || (narg == 6 && lua_isboolean(L, 6))) &&
+  if((narg == 5 || (narg == 6 && lua_isfunction(L, 6))) &&
      lua_isnumber(L, 1) && lua_isnumber(L, 2) && lua_isnumber(L, 3) && lua_isnumber(L, 4) && lua_isnumber(L, 5))
   {
     numinchan = (int)lua_tonumber(L, 1);
@@ -339,10 +331,36 @@ static int pa_opendefaultstream(lua_State *L)
     nbufframe = (unsigned long)lua_tonumber(L, 5);
 
     if(narg == 6)
-      hascallback = lua_toboolean(L, 6);
+      hascallback = 1;
   }
   else
-    luaL_error(L, "expected arguments: number number number number number [boolean]");
+    luaL_error(L, "expected arguments: number number number number number [function]");
+
+  if(hascallback)
+  {
+    luaL_Buffer b;
+    size_t l;
+    const char *str;
+
+    luaL_buffinit(L, &b);
+    if(lua_dump(L, pa_writer, &b) != 0)
+      luaL_error(L, "invalid callback function -- cannot be dumped");
+    luaL_pushresult(&b);
+    str = luaL_checklstring(L, -1, &l);
+
+    if(!(pa_L = luaL_newstate()))
+      luaL_error(L, "could not allocate new state");
+
+    luaL_openlibs(pa_L);
+    if(luaL_loadbuffer(pa_L, str, l, NULL))
+      luaL_error(L, "could not load the callback function properly");
+    
+    if(lua_pcall(pa_L, 0, LUA_MULTRET, 0))
+      luaL_error(L, "could not execute the callback function properly: %s", lua_tostring(pa_L, -1));
+
+    if(!lua_isfunction(pa_L, -1))
+      luaL_error(L, "the callback function did not return a function");
+  }
 
   stream = luaT_alloc(L, sizeof(pa_Stream));
   stream->id = NULL;
@@ -350,8 +368,8 @@ static int pa_opendefaultstream(lua_State *L)
   stream->noutchannel = numoutchan;
   stream->insampleformat = sampleformat;
   stream->outsampleformat = sampleformat;
-  stream->outbuffer = NULL;
-  stream->noutframe = 0;
+  stream->pa_L = pa_L;
+  stream->callbackerror = NULL;
   luaT_pushudata(L, stream, pa_stream_id);
 
   if(hascallback)
@@ -597,33 +615,27 @@ static int pa_stream_writeShort(lua_State *L)
   return 1;
 }
 
-static int pa_stream_outputbufferShort(lua_State *L)
+static int pa_stream_callbackerror(lua_State *L)
 {
   pa_Stream *stream = NULL;
-  THShortTensor *data = NULL;
-  long nelem = 0;
   int narg = lua_gettop(L);
 
-  if(narg == 2 && luaT_isudata(L, 1, pa_stream_id) && luaT_isudata(L, 2, torch_ShortTensor_id))
-  {
+  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
     stream = luaT_toudata(L, 1, pa_stream_id);
-    data = luaT_toudata(L, 2, torch_ShortTensor_id);
-  }
   else
-    luaL_error(L, "expected arguments: Stream ShortTensor");
+    luaL_error(L, "expected arguments: Stream");
 
   if(!stream->id)
     luaL_error(L, "attempt to operate on a closed stream");
 
   if(Pa_IsStreamActive(stream->id))
-    luaL_error(L, "cannot change the buffer of an active stream");
+    luaL_error(L, "cannot check callback error on an active stream");
 
-  nelem = THShortTensor_nElement(data);
-  luaL_argcheck(L, (nelem > 0) && (nelem % stream->noutchannel == 0), 2, "invalid data: number of elements must be > 0 and divisible by the number of channels");
-  luaL_argcheck(L, stream->outsampleformat & paInt16, 1, "stream does not support short data");
-
-  stream->outbuffer = THShortTensor_newClone(data);
-  stream->noutframe = 0;
+  if(stream->callbackerror)
+  {
+    lua_pushstring(L, stream->callbackerror);
+    return 1;
+  }
 
   return 0;
 }
@@ -639,7 +651,7 @@ static const struct luaL_Reg pa_stream__ [] = {
   {"writeavailable", pa_stream_writeavailable},
   {"cpuload", pa_stream_cpuload},
   {"writeShort", pa_stream_writeShort},
-  {"outputbufferShort", pa_stream_outputbufferShort}, /* pourrait faire un shortcut (en lua?) qui call la bonne */
+  {"callbackerror", pa_stream_callbackerror},
   {NULL, NULL}
 };
 
@@ -661,17 +673,17 @@ static const struct luaL_Reg pa_global__ [] = {
 
 DLL_EXPORT int luaopen_libpa(lua_State *L)
 {
-  if(sizeof(short) != sizeof(paInt16))
-    luaL_error("your platform has a strange size for short int type");
+  if(sizeof(short) != 2)
+    luaL_error(L, "your platform has a strange size for short int type");
 
-  if(sizeof(int) != sizeof(paInt32))
-    luaL_error("your platform has a strange size for int type");
+  if(sizeof(int) != 4)
+    luaL_error(L, "your platform has a strange size for int type");
 
-  if(sizeof(char) != sizeof(paInt8))
-    luaL_error("your platform has a strange size for char type");
+  if(sizeof(char) != 1)
+    luaL_error(L, "your platform has a strange size for char type");
 
-  if(sizeof(float) != sizeof(paFloat32))
-    luaL_error("your platform has a strange size for float type");
+  if(sizeof(float) != 4)
+    luaL_error(L, "your platform has a strange size for float type");
 
   lua_newtable(L);
   lua_pushvalue(L, -1);
