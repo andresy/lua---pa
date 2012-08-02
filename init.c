@@ -3,6 +3,15 @@
 #include <luaT.h>
 #include "TH.h"
 
+/* TODO
+   (*) handle callback input as well as output
+   (*) callback for byte/char/int/float [macroize]
+   (*) (set)callback function
+   (*) freeup properly all that stuff
+   (*) special userdata which is destroyed at the end, such that Pa_Terminate() is called [have it as ref inside streams, so it is called really at the end]
+   (*) handle upvalues in callback creation?
+ */
+
 const void* torch_ShortTensor_id;
 const void* torch_IntTensor_id;
 const void* torch_FloatTensor_id;
@@ -336,6 +345,7 @@ static int pa_opendefaultstream(lua_State *L)
   else
     luaL_error(L, "expected arguments: number number number number number [function]");
 
+  /* should put that into a (set)callback function, so we can modify the callback on the fly */
   if(hascallback)
   {
     luaL_Buffer b;
