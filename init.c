@@ -367,8 +367,8 @@ static void pa_setcallback__(lua_State *L, int idx, pa_Stream *stream)
     lua_pop(L, 2);
     luaL_error(L, "could not execute the callback function properly: %s", lua_tostring(pa_L, -1));
   }
-  
-  if(!lua_isfunction(pa_L, -1))
+
+  if(!((lua_gettop(pa_L) > 0) && lua_isfunction(pa_L, -1)))
   {
     lua_pop(L, 2);
     luaL_error(L, "the callback function did not return a function");
@@ -505,9 +505,7 @@ static int pa_stream_free(lua_State *L)
   else
     luaL_error(L, "expected arguments: Stream");
 
-  if(!stream->id)
-    luaL_error(L, "attempt to operate on a closed stream");
-  else
+  if(stream->id)
     Pa_CloseStream(stream->id);
 
   /* should also free input/output buffers */
