@@ -24,7 +24,8 @@ typedef struct pa_stream__
     PaStream *id;
     int ninchannel;
     int noutchannel;
-    PaSampleFormat sampleformat;
+    PaSampleFormat insampleformat;
+    PaSampleFormat outsampleformat;
     lua_State *pa_L;
     const char *callbackerror;
 } pa_Stream;
@@ -112,20 +113,36 @@ static int pa_devicecount(lua_State *L)
 static int pa_defaultinputdevice(lua_State *L)
 {
   int narg = lua_gettop(L);
+  PaDeviceIndex dev;
+
   if(narg != 0)
     luaL_error(L, "invalid arguments: no argument expected");
 
-  lua_pushnumber(L, Pa_GetDefaultInputDevice()+1);
+  dev = Pa_GetDefaultInputDevice();
+
+  if(dev == paNoDevice)
+    return 0;
+  else
+    lua_pushnumber(L, dev+1);
+
   return 1;
 }
 
 static int pa_defaultoutputdevice(lua_State *L)
 {
   int narg = lua_gettop(L);
+  PaDeviceIndex dev;
+
   if(narg != 0)
     luaL_error(L, "invalid arguments: no argument expected");
 
-  lua_pushnumber(L, Pa_GetDefaultOutputDevice()+1);
+  dev = Pa_GetDefaultOutputDevice();
+
+  if(dev == paNoDevice)
+    return 0;
+  else
+    lua_pushnumber(L, dev+1);
+
   return 1;
 }
 
@@ -318,6 +335,103 @@ static int pa_writer(lua_State *L, const void* b, size_t size, void* B)
   return 0;
 }
 
+static void pa_setcallback__(lua_State *L, int idx, pa_Stream *stream)
+{
+  luaL_Buffer b;
+  size_t l;
+  const char *str;
+  lua_State *pa_L = stream->pa_L;
+
+  if(!lua_isfunction(L, idx))
+    luaL_error(L, "internal error: provided callback is not a function");
+
+  lua_pushvalue(L, idx);
+  luaL_buffinit(L, &b);
+  if(lua_dump(L, pa_writer, &b) != 0)
+  {
+    lua_pop(L, 1);
+    luaL_error(L, "invalid callback function -- cannot be dumped");
+  }
+  luaL_pushresult(&b);
+  str = luaL_checklstring(L, -1, &l);
+
+  lua_settop(pa_L, 0);
+  if(luaL_loadbuffer(pa_L, str, l, NULL))
+  {
+    lua_pop(L, 2);
+    luaL_error(L, "could not load the callback function properly");
+  }
+  
+  if(lua_pcall(pa_L, 0, LUA_MULTRET, 0))
+  {
+    lua_pop(L, 2);
+    luaL_error(L, "could not execute the callback function properly: %s", lua_tostring(pa_L, -1));
+  }
+  
+  if(!lua_isfunction(pa_L, -1))
+  {
+    lua_pop(L, 2);
+    luaL_error(L, "the callback function did not return a function");
+  }
+
+  lua_pop(L, 2);
+}
+
+static int pa_openstream(lua_State *L)
+{
+  double samplerate = 0;
+  unsigned long nbufframe = 0;
+  pa_Stream *stream = NULL;
+  int narg = lua_gettop(L);
+  int hascallback = 0;
+  PaStreamParameters inparams;
+  PaStreamParameters outparams;
+  PaStreamFlags flags = 0;
+
+  if((narg == 5 || (narg == 6 && lua_isfunction(L, 6)))
+     && (lua_istable(L, 1) || lua_isnil(L, 1))
+     && (lua_istable(L, 2) || lua_isnil(L, 2))
+     && lua_isnumber(L, 3) && lua_isnumber(L, 4) && lua_isnumber(L, 5))
+  {
+    if(lua_istable(L, 1))
+      pa_readstreamparameters(L, 1, &inparams);
+    if(lua_istable(L, 2))
+      pa_readstreamparameters(L, 2, &outparams);
+    samplerate = (double)lua_tonumber(L, 3);
+    nbufframe = (unsigned long)lua_tonumber(L, 4);
+    flags = (PaStreamFlags)lua_tonumber(L, 5);
+
+    if(narg == 6)
+      hascallback = 1;
+  }
+  else
+    luaL_error(L, "expected arguments: (table | nil) (table | nil) number number number [function]");
+
+  stream = luaT_alloc(L, sizeof(pa_Stream));
+  stream->id = NULL;
+  stream->ninchannel = (lua_istable(L, 1) ? inparams.channelCount : 0);
+  stream->noutchannel = (lua_istable(L, 2) ? outparams.channelCount : 0);
+  stream->insampleformat = (lua_istable(L, 1) ? inparams.sampleFormat : 0);
+  stream->outsampleformat = (lua_istable(L, 2) ? outparams.sampleFormat : 0);
+  if(!(stream->pa_L = luaL_newstate()))
+    luaL_error(L, "could not allocate new state");
+  stream->callbackerror = NULL;
+  luaT_pushudata(L, stream, pa_stream_id);
+  luaL_openlibs(stream->pa_L);
+
+  if(hascallback)
+    pa_setcallback__(L, 6, stream);
+
+  pa_checkerror(L, Pa_OpenStream(&stream->id, 
+                                 (lua_istable(L, 1) ? &inparams : NULL),
+                                 (lua_istable(L, 2) ? &outparams : NULL),
+                                 samplerate, nbufframe, flags,
+                                 (hascallback ? streamcallbackshort : NULL),
+                                 (hascallback ? stream : NULL)));
+
+  return 1;
+}
+
 static int pa_opendefaultstream(lua_State *L)
 {
   int numinchan = 0;
@@ -328,7 +442,6 @@ static int pa_opendefaultstream(lua_State *L)
   pa_Stream *stream = NULL;
   int narg = lua_gettop(L);
   int hascallback = 0;
-  lua_State *pa_L = NULL;
 
   if((narg == 5 || (narg == 6 && lua_isfunction(L, 6))) &&
      lua_isnumber(L, 1) && lua_isnumber(L, 2) && lua_isnumber(L, 3) && lua_isnumber(L, 4) && lua_isnumber(L, 5))
@@ -345,47 +458,24 @@ static int pa_opendefaultstream(lua_State *L)
   else
     luaL_error(L, "expected arguments: number number number number number [function]");
 
-  /* should put that into a (set)callback function, so we can modify the callback on the fly */
-  if(hascallback)
-  {
-    luaL_Buffer b;
-    size_t l;
-    const char *str;
-
-    luaL_buffinit(L, &b);
-    if(lua_dump(L, pa_writer, &b) != 0)
-      luaL_error(L, "invalid callback function -- cannot be dumped");
-    luaL_pushresult(&b);
-    str = luaL_checklstring(L, -1, &l);
-
-    if(!(pa_L = luaL_newstate()))
-      luaL_error(L, "could not allocate new state");
-
-    luaL_openlibs(pa_L);
-    if(luaL_loadbuffer(pa_L, str, l, NULL))
-      luaL_error(L, "could not load the callback function properly");
-    
-    if(lua_pcall(pa_L, 0, LUA_MULTRET, 0))
-      luaL_error(L, "could not execute the callback function properly: %s", lua_tostring(pa_L, -1));
-
-    if(!lua_isfunction(pa_L, -1))
-      luaL_error(L, "the callback function did not return a function");
-  }
-
   stream = luaT_alloc(L, sizeof(pa_Stream));
   stream->id = NULL;
   stream->ninchannel = numinchan;
   stream->noutchannel = numoutchan;
-  stream->sampleformat = sampleformat;
-  stream->pa_L = pa_L;
+  stream->insampleformat = sampleformat;
+  stream->outsampleformat = sampleformat;
+  if(!(stream->pa_L = luaL_newstate()))
+    luaL_error(L, "could not allocate new state");
   stream->callbackerror = NULL;
   luaT_pushudata(L, stream, pa_stream_id);
+  luaL_openlibs(stream->pa_L);
 
   if(hascallback)
-    pa_checkerror(L, Pa_OpenDefaultStream(&stream->id, numinchan, numoutchan, sampleformat, samplerate, nbufframe, streamcallbackshort, stream));
-  else
-    pa_checkerror(L, Pa_OpenDefaultStream(&stream->id, numinchan, numoutchan, sampleformat, samplerate, nbufframe, NULL, NULL));
+    pa_setcallback__(L, 6, stream);
 
+  pa_checkerror(L, Pa_OpenDefaultStream(&stream->id, numinchan, numoutchan, sampleformat, samplerate, nbufframe, 
+                                        (hascallback ? streamcallbackshort : NULL),
+                                        (hascallback ? stream : NULL)));
   return 1;
 }
 
@@ -608,7 +698,7 @@ static int pa_stream_writeShort(lua_State *L)
 
   nelem = THShortTensor_nElement(data);
   luaL_argcheck(L, (nelem > 0) && (nelem % stream->noutchannel == 0), 2, "invalid data: number of elements must be > 0 and divisible by the number of channels");
-  luaL_argcheck(L, stream->sampleformat & paInt16, 1, "stream does not support short data");
+  luaL_argcheck(L, stream->outsampleformat & paInt16, 1, "stream does not support short data");
 
   data = THShortTensor_newContiguous(data);
   err = Pa_WriteStream(stream->id, THShortTensor_data(data), nelem/stream->noutchannel);
@@ -676,6 +766,7 @@ static const struct luaL_Reg pa_global__ [] = {
   {"deviceinfo", pa_deviceinfo},
   {"isformatsupported", pa_isformatsupported},
   {"sleep", pa_sleep},
+  {"openstream", pa_openstream},
   {"opendefaultstream", pa_opendefaultstream},
   {NULL, NULL}
 };
