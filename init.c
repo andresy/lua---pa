@@ -10,6 +10,7 @@
    (*) freeup properly all that stuff
    (*) special userdata which is destroyed at the end, such that Pa_Terminate() is called [have it as ref inside streams, so it is called really at the end]
    (*) handle upvalues in callback creation?
+   (*) pourquoi a torch.rand(2,100) segfault si caller a la fin de toto.lua??
  */
 
 const void* torch_ShortTensor_id;
@@ -23,8 +24,7 @@ typedef struct pa_stream__
     PaStream *id;
     int ninchannel;
     int noutchannel;
-    PaSampleFormat insampleformat;
-    PaSampleFormat outsampleformat;
+    PaSampleFormat sampleformat;
     lua_State *pa_L;
     const char *callbackerror;
 } pa_Stream;
@@ -376,8 +376,7 @@ static int pa_opendefaultstream(lua_State *L)
   stream->id = NULL;
   stream->ninchannel = numinchan;
   stream->noutchannel = numoutchan;
-  stream->insampleformat = sampleformat;
-  stream->outsampleformat = sampleformat;
+  stream->sampleformat = sampleformat;
   stream->pa_L = pa_L;
   stream->callbackerror = NULL;
   luaT_pushudata(L, stream, pa_stream_id);
@@ -609,7 +608,7 @@ static int pa_stream_writeShort(lua_State *L)
 
   nelem = THShortTensor_nElement(data);
   luaL_argcheck(L, (nelem > 0) && (nelem % stream->noutchannel == 0), 2, "invalid data: number of elements must be > 0 and divisible by the number of channels");
-  luaL_argcheck(L, stream->outsampleformat & paInt16, 1, "stream does not support short data");
+  luaL_argcheck(L, stream->sampleformat & paInt16, 1, "stream does not support short data");
 
   data = THShortTensor_newContiguous(data);
   err = Pa_WriteStream(stream->id, THShortTensor_data(data), nelem/stream->noutchannel);
