@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <portaudio.h>
 #include <luaT.h>
+#include <lualib.h>
 #include "TH.h"
 
 /* TODO
@@ -12,12 +13,6 @@
    (*) handle upvalues in callback creation?
    (*) pourquoi a torch.rand(2,100) segfault si caller a la fin de toto.lua??
  */
-
-const void* torch_ShortTensor_id;
-const void* torch_IntTensor_id;
-const void* torch_FloatTensor_id;
-const void* torch_DoubleTensor_id;
-const void *pa_stream_id;
 
 typedef struct pa_stream__
 {
@@ -312,7 +307,7 @@ static int streamcallbackshort(const void *input_, void *output_,
   outtensor.flag = 0;
 
   lua_pushvalue(stream->pa_L, -1);
-  luaT_pushudata(stream->pa_L, &outtensor, luaT_checktypename2id(stream->pa_L, "torch.ShortTensor"));
+  luaT_pushudata(stream->pa_L, &outtensor, "torch.ShortTensor");
   if(lua_pcall(stream->pa_L, 1, 1, 0))
   {
     stream->callbackerror = lua_tostring(stream->pa_L, -1);
@@ -416,7 +411,7 @@ static int pa_openstream(lua_State *L)
   if(!(stream->pa_L = luaL_newstate()))
     luaL_error(L, "could not allocate new state");
   stream->callbackerror = NULL;
-  luaT_pushudata(L, stream, pa_stream_id);
+  luaT_pushudata(L, stream, "pa.Stream");
   luaL_openlibs(stream->pa_L);
 
   if(hascallback)
@@ -467,7 +462,7 @@ static int pa_opendefaultstream(lua_State *L)
   if(!(stream->pa_L = luaL_newstate()))
     luaL_error(L, "could not allocate new state");
   stream->callbackerror = NULL;
-  luaT_pushudata(L, stream, pa_stream_id);
+  luaT_pushudata(L, stream, "pa.Stream");
   luaL_openlibs(stream->pa_L);
 
   if(hascallback)
@@ -483,8 +478,8 @@ static int pa_stream_close(lua_State *L)
 {
   pa_Stream *stream = NULL;
   int narg = lua_gettop(L);
-  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
-    stream = luaT_toudata(L, 1, pa_stream_id);
+  if(narg == 1 && luaT_isudata(L, 1, "pa.Stream"))
+    stream = luaT_toudata(L, 1, "pa.Stream");
   else
     luaL_error(L, "expected arguments: Stream");
 
@@ -500,8 +495,8 @@ static int pa_stream_free(lua_State *L)
 {
   pa_Stream *stream = NULL;
   int narg = lua_gettop(L);
-  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
-    stream = luaT_toudata(L, 1, pa_stream_id);
+  if(narg == 1 && luaT_isudata(L, 1, "pa.Stream"))
+    stream = luaT_toudata(L, 1, "pa.Stream");
   else
     luaL_error(L, "expected arguments: Stream");
 
@@ -518,8 +513,8 @@ static int pa_stream_start(lua_State *L)
 {
   pa_Stream *stream = NULL;
   int narg = lua_gettop(L);
-  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
-    stream = luaT_toudata(L, 1, pa_stream_id);
+  if(narg == 1 && luaT_isudata(L, 1, "pa.Stream"))
+    stream = luaT_toudata(L, 1, "pa.Stream");
   else
     luaL_error(L, "expected arguments: Stream");
 
@@ -534,8 +529,8 @@ static int pa_stream_abort(lua_State *L)
 {
   pa_Stream *stream = NULL;
   int narg = lua_gettop(L);
-  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
-    stream = luaT_toudata(L, 1, pa_stream_id);
+  if(narg == 1 && luaT_isudata(L, 1, "pa.Stream"))
+    stream = luaT_toudata(L, 1, "pa.Stream");
   else
     luaL_error(L, "expected arguments: Stream");
 
@@ -550,8 +545,8 @@ static int pa_stream_stop(lua_State *L)
 {
   pa_Stream *stream = NULL;
   int narg = lua_gettop(L);
-  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
-    stream = luaT_toudata(L, 1, pa_stream_id);
+  if(narg == 1 && luaT_isudata(L, 1, "pa.Stream"))
+    stream = luaT_toudata(L, 1, "pa.Stream");
   else
     luaL_error(L, "expected arguments: Stream");
 
@@ -568,8 +563,8 @@ static int pa_stream_isstopped(lua_State *L)
   int narg = lua_gettop(L);
   PaError err = 0;
 
-  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
-    stream = luaT_toudata(L, 1, pa_stream_id);
+  if(narg == 1 && luaT_isudata(L, 1, "pa.Stream"))
+    stream = luaT_toudata(L, 1, "pa.Stream");
   else
     luaL_error(L, "expected arguments: Stream");
 
@@ -593,8 +588,8 @@ static int pa_stream_isactive(lua_State *L)
   int narg = lua_gettop(L);
   PaError err = 0;
 
-  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
-    stream = luaT_toudata(L, 1, pa_stream_id);
+  if(narg == 1 && luaT_isudata(L, 1, "pa.Stream"))
+    stream = luaT_toudata(L, 1, "pa.Stream");
   else
     luaL_error(L, "expected arguments: Stream");
 
@@ -618,8 +613,8 @@ static int pa_stream_readavailable(lua_State *L)
   int narg = lua_gettop(L);
   PaError err = 0;
 
-  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
-    stream = luaT_toudata(L, 1, pa_stream_id);
+  if(narg == 1 && luaT_isudata(L, 1, "pa.Stream"))
+    stream = luaT_toudata(L, 1, "pa.Stream");
   else
     luaL_error(L, "expected arguments: Stream");
 
@@ -641,8 +636,8 @@ static int pa_stream_writeavailable(lua_State *L)
   int narg = lua_gettop(L);
   PaError err = 0;
 
-  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
-    stream = luaT_toudata(L, 1, pa_stream_id);
+  if(narg == 1 && luaT_isudata(L, 1, "pa.Stream"))
+    stream = luaT_toudata(L, 1, "pa.Stream");
   else
     luaL_error(L, "expected arguments: Stream");
 
@@ -663,8 +658,8 @@ static int pa_stream_cpuload(lua_State *L)
   pa_Stream *stream = NULL;
   int narg = lua_gettop(L);
 
-  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
-    stream = luaT_toudata(L, 1, pa_stream_id);
+  if(narg == 1 && luaT_isudata(L, 1, "pa.Stream"))
+    stream = luaT_toudata(L, 1, "pa.Stream");
   else
     luaL_error(L, "expected arguments: Stream");
 
@@ -683,10 +678,10 @@ static int pa_stream_writeShort(lua_State *L)
   PaError err = 0;
   int narg = lua_gettop(L);
 
-  if(narg == 2 && luaT_isudata(L, 1, pa_stream_id) && luaT_isudata(L, 2, torch_ShortTensor_id))
+  if(narg == 2 && luaT_isudata(L, 1, "pa.Stream") && luaT_isudata(L, 2, "torch.ShortTensor"))
   {
-    stream = luaT_toudata(L, 1, pa_stream_id);
-    data = luaT_toudata(L, 2, torch_ShortTensor_id);
+    stream = luaT_toudata(L, 1, "pa.Stream");
+    data = luaT_toudata(L, 2, "torch.ShortTensor");
   }
   else
     luaL_error(L, "expected arguments: Stream ShortTensor");
@@ -717,8 +712,8 @@ static int pa_stream_callbackerror(lua_State *L)
   pa_Stream *stream = NULL;
   int narg = lua_gettop(L);
 
-  if(narg == 1 && luaT_isudata(L, 1, pa_stream_id))
-    stream = luaT_toudata(L, 1, pa_stream_id);
+  if(narg == 1 && luaT_isudata(L, 1, "pa.Stream"))
+    stream = luaT_toudata(L, 1, "pa.Stream");
   else
     luaL_error(L, "expected arguments: Stream");
 
@@ -807,12 +802,7 @@ DLL_EXPORT int luaopen_libpa(lua_State *L)
   lua_setfield(L, -2, "noninterleaved");
   lua_setfield(L, -2, "format");
 
-  torch_ShortTensor_id = luaT_checktypename2id(L, "torch.ShortTensor");
-  torch_IntTensor_id = luaT_checktypename2id(L, "torch.IntTensor");
-  torch_FloatTensor_id = luaT_checktypename2id(L, "torch.FloatTensor");
-  torch_DoubleTensor_id = luaT_checktypename2id(L, "torch.DoubleTensor");
-
-  pa_stream_id = luaT_newmetatable(L, "pa.Stream", NULL, NULL, pa_stream_free, NULL);
+  luaT_newmetatable(L, "pa.Stream", NULL, NULL, pa_stream_free, NULL);
   luaL_register(L, NULL, pa_stream__);
   lua_pop(L, 1);
 
